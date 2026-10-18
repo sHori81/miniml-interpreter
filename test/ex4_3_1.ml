@@ -1,7 +1,6 @@
 open OUnit
 open PretypingTestGenerator
 open Miniml
-
 let dataset_for_string_of_ty = [
   { input = "int"; };
   { input = "bool"; };

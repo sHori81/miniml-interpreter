@@ -1,57 +1,113 @@
-# MiniML Interpreter
+# MiniML Interpreter — OCamlで作る小さな関数型言語の処理系
 
-「プログラミング言語処理系」と「計算機科学実験及演習３」の履修者へ：この README は課題を行うにあたって重要な情報を含んでいるので，ちゃんと全部読むこと．
+OCamlのサブセット言語「MiniML」のインタプリタを、**OCamlで実装**したものです。
+字句解析・構文解析・評価・**型推論**までを持つ、対話型（REPL）のインタプリタです。
 
-This directory contains the source files for MiniML interpreter, an
-interpreter of a subset of OCaml used in the class "Implementation of
-Programming Languages" provided by the Department of Engineering,
-Kyoto University.
+| 項目 | 内容 |
+|---|---|
+| 開発形態 | 個人開発 |
+| 背景 | 大学の実験（計算機科学実験及演習3 ソフトウェア）の一環として実装 |
+| 言語・ツール | OCaml, ocamllex, Menhir, dune |
 
-## Required software/library
+```ocaml
+# let rec fact = fun n -> if n < 1 then 1 else n * fact (n + -1) in fact 5;;
+val - : int = 120
+# let f = fun x -> fun y -> x + y;;
+val f : int -> int -> int = <fun>
+# true && 1;;
+Type Error: unify: cannot unify types
+```
 
-You need OCaml (http://ocaml.org/) and a parser generator Menhir
-(http://gallium.inria.fr/~fpottier/menhir/) to build this interpreter.
+## 自分で実装した部分
 
-We strongly recommend installing opam (https://opam.ocaml.org/), the
-standard package manager for OCaml as of 2017. You can install many
-useful libraries with opam.
+このリポジトリの **1つ目のコミットは配布された雛形**、**2つ目のコミットが自分の実装** です。
+`git diff HEAD~1 HEAD`（またはGitHubのコミット画面）で、追加した部分だけを確認できます（約500行）。
 
-- Read https://opam.ocaml.org/doc/Install.html for installing opam to
-  your computer. (The computer system at the Keisanki course already
-  has opam.)
-- (You need to do this step only once.) Type `opam init` first. To
-  install menhir, type `opam install menhir dune ounit`.
-- To update the package list, type `opam update`.
-- To upgrade all the packages installed to your system, type `opam upgrade`.
-- For more detailed usage, see https://opam.ocaml.org/doc/Usage.html
+### 言語機能の追加（字句解析・構文解析・評価）
 
-## Building and invoking MiniML interpreter
+| 機能 | 主な変更ファイル |
+|---|---|
+| 論理演算子 `&&` / `\|\|`（**短絡評価**） | `lexer.mll`, `parser.mly`, `eval.ml` |
+| `let` 式・トップレベルの `let` 宣言 | `parser.mly`, `syntax.ml`, `eval.ml` |
+| 関数 `fun x -> e` と関数適用（**クロージャ**） | `parser.mly`, `syntax.ml`, `eval.ml` |
+| 再帰関数 `let rec`（環境への参照を後から書き換えて実現） | `parser.mly`, `syntax.ml`, `eval.ml` |
 
-Software written in OCaml
+### 型推論（[`src/typing.ml`](src/typing.ml)）
 
-- Type `dune build` to build.
-- Type `dune exec miniml` to invoke the interpreter.
-- Type `dune runtest` to run tests
+- 型変数・関数型を含む型の表現と、型の中の自由な型変数の集合の計算
+- 型代入の適用と、**単一化（unification）** アルゴリズム（出現検査あり）
+- 式の構造に沿って型の制約を集め、単一化で解く型推論（整数・真偽値・二項演算・if・let・関数・関数適用・let rec）
 
+### REPLの改善（[`src/cui.ml`](src/cui.ml)）
 
-## Files
+- 評価結果に**推論した型**を表示（`val f : int -> int = <fun>`）
+- 構文エラー・型エラー・実行時エラーを捕まえてメッセージを表示し、**インタプリタを落とさずに続行**
 
-This directory contains the following files.
+## 工夫した点
 
-- `main.ml`: The entry point of the entire interpreter.
-- `cui.ml`: The function of the CUI.
-- `src/syntax.ml`: Definition of the type for MiniML abstract syntax trees.
-- `src/eval.ml`: The functions that evaluate MiniML expressions/declarations.
-- `src/parser.mly`: The definition of the MiniML parser.
-- `src/lexer.mll`: The definition of the MiniML lexer.
-- `src/environment.mli`: The interface of the ADT (abstract data type) for
-  an environment -- an important data structure often used in
-  interpreters and compilers.
-- `src/environment.ml`: The implementation of the ADT for an environment.
-- `src/mySet.mli`: The interface of the ADT for a set.
-- `src/mySet.ml`: The implementation of the ADT for a set.
-- `src/typing.ml`: The implementation of MiniML type inference (to be
-  implemented by students.)
+### 論理演算子の短絡評価
+最初は他の二項演算子と同じように、両辺を評価してから計算していました。しかしそれでは `true || undef` のように、左辺だけで結果が決まる式でも右辺を評価してエラーになってしまいます。そこで評価器で `&&` / `||` だけを特別に扱い、**左辺で結果が決まる場合は右辺を評価しない**ようにしました。
 
-- `test/dune`: The config file of `dune runtest`. 
-  - After implementing the exercises, remove the corresponding symbol `;`.
+### クロージャによる静的スコープ
+関数の中の自由変数は「呼び出した時点」ではなく「**定義した時点**」の環境を参照する必要があります。関数値を「仮引数・本体・定義時の環境」の3つ組（クロージャ）として表し、関数を作った時点の環境を閉じ込めました。
+
+```ocaml
+# let a = 100 in let f2 = fun x -> a * x in let a = 10 in f2 3;;
+val - : int = 300   (* 定義時の a = 100 が使われる *)
+```
+
+### バックパッチによる再帰関数
+普通にクロージャを作ると、関数本体の中から自分自身の名前が見えず、再帰呼び出しが未定義エラーになります。そこで、
+
+1. 空の環境を指す参照を用意してクロージャを作る
+2. そのクロージャを関数名に束縛した新しい環境を作る
+3. 参照の中身を、その新しい環境に**後から書き換える**（破壊的代入）
+
+という手順で、**自分自身を含む環境を持つ循環構造**を作り、再帰呼び出しを実現しました。
+
+### 型推論：制約の生成と解決を分けた設計
+型変数を導入してからは、各構文の型チェックをその場で行うのをやめ、**各構文では「満たすべき型の等式（制約）」を集めるだけ**にしました。制約の解決は単一化（`unify`）にまとめて任せることで、二項演算・if・関数適用・let rec などの規則を同じ形で書けるようにしました。
+
+- 単一化では、`'a = 'a -> 'b` のような制約で代入が無限に続くのを防ぐため、**出現検査（occurs check）** を入れています
+- 型代入の連続適用は `List.fold_left` で簡潔に書きました
+- 「型代入を残りの制約に適用する処理」を補助関数にまとめ、単一化の中で何度も使う処理を共通化しました
+- `let rec` は、関数の引数と戻り値の型を先に型変数として置いておき、本体の型推論の結果と単一化して決めます。`let rec` 式に加えて、トップレベルの `let rec` 宣言にも対応させました
+
+```ocaml
+# let twice = fun f -> fun x -> f (f x);;
+val twice : ('d -> 'd) -> 'd -> 'd = <fun>
+# let rec applyn = fun n -> fun f -> fun x -> if n < 1 then x else f (applyn (n + (-1)) f x);;
+val applyn : int -> ('g -> 'g) -> 'g -> 'g = <fun>
+```
+
+### エラー処理をまとめた設計
+エラーはすべて1か所で受け取り、例外の種類ごとに**メッセージの文字列だけを作ってから、表示と再実行を1回だけ行う**形にしました。エラーの種類が増えても、パターンを1行足すだけで対応できます。
+
+## 実行方法
+
+[opam](https://opam.ocaml.org/) で OCaml を入れたうえで、次のコマンドを実行します。
+
+```bash
+opam install dune menhir ounit
+dune build
+dune exec miniml    # インタプリタを起動
+dune runtest        # テストを実行
+```
+
+## ファイル構成
+
+```
+main.ml            エントリポイント
+src/lexer.mll      字句解析（ocamllex）
+src/parser.mly     構文解析（Menhir）
+src/syntax.ml      抽象構文木と型の定義
+src/eval.ml        評価器
+src/typing.ml      型推論
+src/cui.ml         対話環境（REPL）
+test/              課題ごとのテスト
+docs/ORIGINAL_README.md  配布元のREADME
+```
+
+## クレジット
+
+雛形のコードとテストは、京都大学「プログラミング言語処理系」の授業で配布されたもの（[kuis-isle3sw/IoPLMaterials](https://github.com/kuis-isle3sw/IoPLMaterials)）です。
